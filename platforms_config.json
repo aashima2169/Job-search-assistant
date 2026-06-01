@@ -1,0 +1,58 @@
+{
+  "platforms": {
+    "linkedin": {
+      "name": "LinkedIn",
+      "base_url": "https://www.linkedin.com",
+      "profile_url_pattern": "https://www.linkedin.com/in/{username}",
+      "enabled": true,
+      "scraper_type": "headless_browser",
+      "timeout": 10,
+      "selectors": {
+        "profile_name": "h1.text-heading-xlarge",
+        "headline": "div.text-body-medium",
+        "about": "section[id='about'] p",
+        "experience": "section[id='experience'] li",
+        "skills": "section[id='skills'] li"
+      },
+      "api_method": "none",
+      "requires_auth": false,
+      "metadata": {
+        "description": "LinkedIn profile scraping",
+        "last_updated": "2025-06-01"
+      }
+    },
+    "naukri": {
+      "name": "Naukri",
+      "base_url": "https://www.naukri.com",
+      "profile_url_pattern": "https://www.naukri.com/mnjuser/profile/{user_id}",
+      "enabled": true,
+      "scraper_type": "http",
+      "timeout": 8,
+      "selectors": {
+        "profile_name": "h1.fullName",
+        "headline": "div.title",
+        "about": "div.summaryText",
+        "experience": "section.experience li",
+        "skills": "section.skills .tagItem"
+      },
+      "api_method": "none",
+      "requires_auth": false,
+      "metadata": {
+        "description": "Naukri profile scraping",
+        "last_updated": "2025-06-01"
+      }
+    }
+  },
+  "scraper_config": {
+    "headless_browser": {
+      "timeout": 10,
+      "wait_for_selector": true,
+      "javascript_enabled": true
+    },
+    "http": {
+      "timeout": 8,
+      "follow_redirects": true,
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+  }
+}
