@@ -1,34 +1,36 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 import os
-import shutil
-from pathlib import Path
+import json
 import logging
+from io import BytesIO
 
+from supabase import create_client, Client
 from resume_processor import ResumeExtractor, ResumeParser, ResumeMatcher
 from platform_config_loader import PlatformConfigLoader
 from platform_handlers import PlatformHandlerFactory
 
-app = FastAPI(title="Push - Resume-Based Job Matching")
+app = FastAPI(title="Push - Resume-Based Job Matching (Vercel)")
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create uploads directory
-UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
+# Initialize Supabase
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY environment variables")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Initialize components
-loader = PlatformConfigLoader()
 resume_extractor = ResumeExtractor()
 resume_parser = ResumeParser()
 resume_matcher = ResumeMatcher()
-
-# Store parsed resumes in memory (in production, use database)
-stored_resumes = {}
+loader = PlatformConfigLoader()
 
 
 # ============ SCHEMAS ============
@@ -39,9 +41,9 @@ class JobScore(BaseModel):
     company: str
     location: str
     salary: Optional[str]
-    overall_score: int  # 0-100
-    recommendation: str  # APPLY, CONSIDER, SKIP
-    scores: Dict[str, int]  # skill_match, experience_fit, role_alignment, location_fit, company_fit
+    overall_score: int
+    recommendation: str
+    scores: Dict[str, int]
     strengths: List[str]
     gaps: List[str]
     red_flags: List[str]
@@ -51,7 +53,7 @@ class JobScore(BaseModel):
 class MatchJobsRequest(BaseModel):
     """Request to match jobs using uploaded resume"""
     platform: str
-    resume_id: str  # ID of uploaded resume
+    resume_id: str
     job_search_keyword: str
     job_search_location: str
 
@@ -65,17 +67,23 @@ class MatchJobsResponse(BaseModel):
     total_jobs_found: int
     scored_jobs_count: int
     jobs: List[JobScore]
-    summary: Dict  # Stats about scores
+    summary: Dict
 
 
-# ============ RESUME UPLOAD ENDPOINTS ============
+# ============ RESUME UPLOAD ============
 
 @app.post("/upload-resume")
-async def upload_resume(file: UploadFile = File(...)):
+async def upload_resume(file: UploadFile = File(...), user_id: str = "default", keep_history: bool = True):
     """
-    Upload and parse a resume PDF
+    Upload or update resume to Supabase Storage
     
-    Returns: resume_id for use in job matching
+    Args:
+        file: PDF resume file
+        user_id: User identifier (for organizing resumes)
+        keep_history: If True, keep old versions; if False, replace
+    
+    Returns:
+        resume_id for use in job matching
     """
     try:
         # Validate file type
@@ -85,45 +93,87 @@ async def upload_resume(file: UploadFile = File(...)):
                 detail="Only PDF files are supported"
             )
         
-        # Save file
-        file_path = UPLOAD_DIR / f"{file.filename}"
-        with open(file_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+        logger.info(f"Uploading resume: {file.filename}")
         
-        logger.info(f"Saved resume: {file_path}")
+        # Read file into memory
+        file_content = await file.read()
         
-        # Extract text from PDF
+        # Extract text from PDF (in memory)
         logger.info("Extracting text from PDF...")
-        resume_text = resume_extractor.extract_text_from_pdf(str(file_path))
+        resume_text = extract_pdf_text(file_content)
         
         # Parse resume using Gemini
-        logger.info("Parsing resume...")
+        logger.info("Parsing resume with Gemini...")
         resume_data = resume_parser.parse_resume(resume_text)
         
-        # Generate resume ID
-        resume_id = file.filename.replace(".pdf", "").lower().replace(" ", "_")
+        # Check if this resume already exists
+        base_name = file.filename.replace(".pdf", "").lower().replace(" ", "_")
+        existing_response = supabase.table("resumes").select("*").eq("user_id", user_id).eq("base_name", base_name).execute()
         
-        # Store resume
-        stored_resumes[resume_id] = {
+        version = 1
+        if existing_response.data and keep_history:
+            # Find highest version
+            versions = [r.get("version", 1) for r in existing_response.data]
+            version = max(versions) + 1
+            logger.info(f"Found existing resume. Creating version {version}")
+        elif existing_response.data and not keep_history:
+            # Delete old versions
+            logger.info("Deleting old resume versions...")
+            for old_resume in existing_response.data:
+                supabase.table("resumes").delete().eq("id", old_resume["id"]).execute()
+                if old_resume.get("storage_path"):
+                    try:
+                        supabase.storage.from_("resumes").remove([old_resume["storage_path"]])
+                    except:
+                        pass
+            version = 1
+        
+        # Upload PDF to Supabase Storage with version
+        storage_path = f"{user_id}/{base_name}_v{version}.pdf"
+        
+        logger.info(f"Uploading to Supabase Storage: {storage_path}")
+        supabase.storage.from_("resumes").upload(
+            path=storage_path,
+            file=BytesIO(file_content),
+            file_options={"content-type": "application/pdf"}
+        )
+        
+        # Save metadata to database
+        logger.info("Saving metadata to database...")
+        resume_record = {
+            "user_id": user_id,
             "filename": file.filename,
-            "file_path": str(file_path),
-            "raw_text": resume_text,
+            "base_name": base_name,
+            "version": version,
+            "storage_path": storage_path,
             "parsed_data": resume_data,
-            "uploaded_at": str(os.path.getmtime(file_path))
+            "is_active": True  # Mark as active version
         }
         
-        logger.info(f"Resume parsed successfully: {resume_id}")
+        # If this is not the first version, deactivate old versions
+        if version > 1:
+            supabase.table("resumes").update({"is_active": False}).eq("user_id", user_id).eq("base_name", base_name).execute()
+        
+        db_response = supabase.table("resumes").insert(resume_record).execute()
+        
+        if not db_response.data:
+            raise Exception("Failed to save resume metadata to database")
+        
+        db_id = db_response.data[0]["id"]
+        
+        logger.info(f"✅ Resume uploaded and parsed: {base_name} (v{version})")
         
         return {
             "status": "success",
-            "resume_id": resume_id,
+            "resume_id": db_id,
+            "version": version,
             "filename": file.filename,
             "candidate_name": resume_data.get("name"),
             "candidate_title": resume_data.get("current_title"),
             "years_experience": resume_data.get("years_of_experience"),
             "location": resume_data.get("location"),
-            "skills": resume_data.get("technical_skills", [])[:10],  # Top 10 skills
-            "message": f"✅ Resume uploaded and parsed. Use resume_id '{resume_id}' for job matching"
+            "skills": resume_data.get("technical_skills", [])[:10],
+            "message": f"✅ Resume v{version} uploaded. Use resume_id '{db_id}' for job matching"
         }
     
     except Exception as e:
@@ -134,74 +184,190 @@ async def upload_resume(file: UploadFile = File(...)):
 @app.get("/resume/{resume_id}")
 async def get_resume_info(resume_id: str):
     """Get details of a parsed resume"""
-    if resume_id not in stored_resumes:
-        raise HTTPException(status_code=404, detail=f"Resume '{resume_id}' not found")
+    try:
+        response = supabase.table("resumes").select("*").eq("id", resume_id).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail=f"Resume '{resume_id}' not found")
+        
+        resume = response.data[0]
+        parsed = resume["parsed_data"]
+        
+        return {
+            "resume_id": resume_id,
+            "filename": resume["filename"],
+            "name": parsed.get("name"),
+            "email": parsed.get("email"),
+            "phone": parsed.get("phone"),
+            "location": parsed.get("location"),
+            "current_title": parsed.get("current_title"),
+            "years_experience": parsed.get("years_of_experience"),
+            "technical_skills": parsed.get("technical_skills", []),
+            "soft_skills": parsed.get("soft_skills", []),
+            "experience_count": len(parsed.get("experience", [])),
+            "education": parsed.get("education", []),
+            "certifications": parsed.get("certifications", []),
+            "preferences": parsed.get("preferences", {})
+        }
     
-    resume = stored_resumes[resume_id]
-    parsed = resume["parsed_data"]
-    
-    return {
-        "resume_id": resume_id,
-        "filename": resume["filename"],
-        "name": parsed.get("name"),
-        "email": parsed.get("email"),
-        "phone": parsed.get("phone"),
-        "location": parsed.get("location"),
-        "current_title": parsed.get("current_title"),
-        "years_experience": parsed.get("years_of_experience"),
-        "technical_skills": parsed.get("technical_skills", []),
-        "soft_skills": parsed.get("soft_skills", []),
-        "experience_count": len(parsed.get("experience", [])),
-        "education": parsed.get("education", []),
-        "certifications": parsed.get("certifications", []),
-        "preferences": parsed.get("preferences", {})
-    }
+    except Exception as e:
+        logger.error(f"Error fetching resume: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/resumes")
-async def list_resumes():
-    """List all uploaded resumes"""
-    resumes = []
-    for resume_id, resume_data in stored_resumes.items():
-        parsed = resume_data["parsed_data"]
-        resumes.append({
-            "resume_id": resume_id,
-            "filename": resume_data["filename"],
-            "name": parsed.get("name"),
-            "current_title": parsed.get("current_title"),
-            "location": parsed.get("location")
-        })
+async def list_resumes(user_id: str = "default"):
+    """List all resumes (all versions) for a user"""
+    try:
+        response = supabase.table("resumes").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
+        
+        resumes = []
+        for resume_data in response.data:
+            parsed = resume_data["parsed_data"]
+            resumes.append({
+                "resume_id": resume_data["id"],
+                "filename": resume_data["filename"],
+                "base_name": resume_data.get("base_name"),
+                "version": resume_data.get("version", 1),
+                "is_active": resume_data.get("is_active", False),
+                "name": parsed.get("name"),
+                "current_title": parsed.get("current_title"),
+                "location": parsed.get("location"),
+                "created_at": resume_data["created_at"]
+            })
+        
+        return {
+            "total_resumes": len(resumes),
+            "resumes": resumes
+        }
     
-    return {
-        "total_resumes": len(resumes),
-        "resumes": resumes
-    }
+    except Exception as e:
+        logger.error(f"Error listing resumes: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============ JOB MATCHING ENDPOINTS ============
+@app.get("/resumes/{base_name}/versions")
+async def get_resume_versions(base_name: str, user_id: str = "default"):
+    """Get all versions of a specific resume"""
+    try:
+        response = supabase.table("resumes").select("*").eq("user_id", user_id).eq("base_name", base_name).order("version", desc=True).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail=f"Resume '{base_name}' not found")
+        
+        versions = []
+        for resume_data in response.data:
+            parsed = resume_data["parsed_data"]
+            versions.append({
+                "resume_id": resume_data["id"],
+                "version": resume_data.get("version", 1),
+                "is_active": resume_data.get("is_active", False),
+                "filename": resume_data["filename"],
+                "name": parsed.get("name"),
+                "created_at": resume_data["created_at"]
+            })
+        
+        return {
+            "base_name": base_name,
+            "total_versions": len(versions),
+            "versions": versions
+        }
+    
+    except Exception as e:
+        logger.error(f"Error fetching versions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/resumes/{resume_id}/activate")
+async def activate_resume_version(resume_id: str):
+    """Set a resume version as active (for job matching)"""
+    try:
+        # Get the resume to find its base_name and user_id
+        response = supabase.table("resumes").select("*").eq("id", resume_id).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail=f"Resume '{resume_id}' not found")
+        
+        resume = response.data[0]
+        base_name = resume.get("base_name")
+        user_id = resume.get("user_id")
+        
+        # Deactivate all versions of this resume
+        supabase.table("resumes").update({"is_active": False}).eq("user_id", user_id).eq("base_name", base_name).execute()
+        
+        # Activate this version
+        supabase.table("resumes").update({"is_active": True}).eq("id", resume_id).execute()
+        
+        logger.info(f"Activated resume version: {resume_id}")
+        
+        return {
+            "status": "success",
+            "message": f"Resume version {resume.get('version', 1)} activated",
+            "resume_id": resume_id
+        }
+    
+    except Exception as e:
+        logger.error(f"Error activating resume: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/resumes/{resume_id}")
+async def delete_resume_version(resume_id: str):
+    """Delete a specific resume version"""
+    try:
+        # Get the resume
+        response = supabase.table("resumes").select("*").eq("id", resume_id).execute()
+        
+        if not response.data:
+            raise HTTPException(status_code=404, detail=f"Resume '{resume_id}' not found")
+        
+        resume = response.data[0]
+        storage_path = resume.get("storage_path")
+        
+        # Delete from storage
+        if storage_path:
+            try:
+                supabase.storage.from_("resumes").remove([storage_path])
+                logger.info(f"Deleted from storage: {storage_path}")
+            except Exception as e:
+                logger.warning(f"Could not delete from storage: {str(e)}")
+        
+        # Delete from database
+        supabase.table("resumes").delete().eq("id", resume_id).execute()
+        
+        logger.info(f"Deleted resume version: {resume_id}")
+        
+        return {
+            "status": "success",
+            "message": f"Resume version {resume.get('version', 1)} deleted"
+        }
+    
+    except Exception as e:
+        logger.error(f"Error deleting resume: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ JOB MATCHING ============
 
 @app.post("/match-jobs-with-resume", response_model=MatchJobsResponse)
 async def match_jobs_with_resume(request: MatchJobsRequest):
     """
     Match and score jobs against uploaded resume
-    
-    Process:
-    1. Get parsed resume
-    2. Extract job listings
-    3. Score each job (0-100) against resume
-    4. Return sorted by score
     """
     try:
-        # Validate resume exists
-        if request.resume_id not in stored_resumes:
+        # Get resume from database
+        logger.info(f"Fetching resume: {request.resume_id}")
+        response = supabase.table("resumes").select("parsed_data").eq("id", request.resume_id).execute()
+        
+        if not response.data:
             raise HTTPException(
                 status_code=404,
-                detail=f"Resume '{request.resume_id}' not found. Upload a resume first."
+                detail=f"Resume '{request.resume_id}' not found"
             )
         
-        resume_data = stored_resumes[request.resume_id]["parsed_data"]
+        resume_data = response.data[0]["parsed_data"]
         
-        logger.info(f"Starting job matching for {request.resume_id}...")
+        logger.info("Starting job matching...")
         
         # Get platform handler
         platform_handler = PlatformHandlerFactory.get_handler(request.platform, loader)
@@ -213,7 +379,7 @@ async def match_jobs_with_resume(request: MatchJobsRequest):
             location=request.job_search_location
         )
         
-        # Extract job listings
+        # Extract jobs
         logger.info("🔍 Scraping job listings...")
         jobs = platform_handler.extract_jobs(job_search_url)
         
@@ -229,7 +395,7 @@ async def match_jobs_with_resume(request: MatchJobsRequest):
                 summary={}
             )
         
-        # Score each job
+        # Score jobs
         logger.info(f"🤖 Scoring {len(jobs)} jobs...")
         scored_jobs = []
         
@@ -238,13 +404,13 @@ async def match_jobs_with_resume(request: MatchJobsRequest):
                 score = resume_matcher.score_job(resume_data, job)
                 scored_jobs.append(JobScore(**score))
             except Exception as e:
-                logger.warning(f"Failed to score job {job.get('title')}: {str(e)}")
+                logger.warning(f"Failed to score job: {str(e)}")
                 continue
         
-        # Sort by score (highest first)
+        # Sort by score
         scored_jobs.sort(key=lambda x: x.overall_score, reverse=True)
         
-        # Calculate summary statistics
+        # Calculate summary
         if scored_jobs:
             scores = [job.overall_score for job in scored_jobs]
             summary = {
@@ -253,13 +419,12 @@ async def match_jobs_with_resume(request: MatchJobsRequest):
                 "min_score": min(scores),
                 "apply_count": len([j for j in scored_jobs if j.recommendation == "APPLY"]),
                 "consider_count": len([j for j in scored_jobs if j.recommendation == "CONSIDER"]),
-                "skip_count": len([j for j in scored_jobs if j.recommendation == "SKIP"]),
-                "top_score": scored_jobs[0].overall_score if scored_jobs else 0
+                "skip_count": len([j for j in scored_jobs if j.recommendation == "SKIP"])
             }
         else:
             summary = {}
         
-        logger.info(f"✅ Scored {len(scored_jobs)} jobs")
+        logger.info(f"✅ Matched {len(scored_jobs)} jobs")
         
         return MatchJobsResponse(
             platform=request.platform,
@@ -277,92 +442,37 @@ async def match_jobs_with_resume(request: MatchJobsRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============ HELPER ENDPOINTS ============
+# ============ HELPER FUNCTIONS ============
+
+def extract_pdf_text(file_content: bytes) -> str:
+    """Extract text from PDF bytes (in memory)"""
+    import PyPDF2
+    from io import BytesIO
+    
+    try:
+        pdf_file = BytesIO(file_content)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+        
+        if not text.strip():
+            raise ValueError("PDF appears empty or needs OCR")
+        
+        return text
+    
+    except Exception as e:
+        raise Exception(f"Failed to extract PDF: {str(e)}")
+
+
+# ============ HEALTH CHECK ============
 
 @app.get("/health")
 async def health():
     """Health check"""
     return {
         "status": "healthy",
-        "service": "Push - Resume-Based Job Matcher",
-        "resumes_stored": len(stored_resumes)
+        "service": "Push - Resume Job Matcher (Vercel)",
+        "storage": "Supabase"
     }
-
-
-# ============ USAGE EXAMPLES ============
-
-"""
-API WORKFLOW:
-
-1. UPLOAD RESUME
-   POST /upload-resume
-   Form data: file (PDF)
-   
-   curl -X POST http://localhost:8000/upload-resume \
-     -F "file=@resume.pdf"
-   
-   Response:
-   {
-     "status": "success",
-     "resume_id": "john_doe_resume",
-     "candidate_name": "John Doe",
-     "candidate_title": "Senior Software Engineer"
-   }
-
-2. MATCH JOBS WITH RESUME
-   POST /match-jobs-with-resume
-   
-   curl -X POST http://localhost:8000/match-jobs-with-resume \
-     -H "Content-Type: application/json" \
-     -d '{
-       "platform": "linkedin",
-       "resume_id": "john_doe_resume",
-       "job_search_keyword": "senior engineer",
-       "job_search_location": "San Francisco"
-     }'
-   
-   Response:
-   {
-     "platform": "linkedin",
-     "resume_id": "john_doe_resume",
-     "candidate_name": "John Doe",
-     "total_jobs_found": 142,
-     "scored_jobs_count": 87,
-     "summary": {
-       "avg_score": 72,
-       "apply_count": 23,
-       "consider_count": 45,
-       "skip_count": 19
-     },
-     "jobs": [
-       {
-         "job_title": "Senior Backend Engineer",
-         "company": "Meta",
-         "location": "San Francisco, CA",
-         "salary": "$200K - $300K",
-         "overall_score": 92,
-         "recommendation": "APPLY",
-         "scores": {
-           "skill_match": 95,
-           "experience_fit": 90,
-           "role_alignment": 88,
-           "location_fit": 100,
-           "company_fit": 85
-         },
-         "strengths": [
-           "Expert-level match on required skills",
-           "Exact experience level and domain"
-         ],
-         "gaps": ["Never led a team of 20+"],
-         "red_flags": [],
-         "reasoning": "..."
-       }
-     ]
-   }
-
-3. GET RESUME INFO
-   GET /resume/{resume_id}
-   
-4. LIST ALL RESUMES
-   GET /resumes
-"""
