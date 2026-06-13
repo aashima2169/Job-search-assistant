@@ -10,6 +10,7 @@ class PlatformConfig:
     name: str
     base_url: str
     profile_url_pattern: str
+    jobs_url_pattern: str
     enabled: bool
     scraper_type: str
     timeout: int
