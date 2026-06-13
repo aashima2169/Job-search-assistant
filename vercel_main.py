@@ -476,3 +476,5 @@ async def health():
         "service": "Push - Resume Job Matcher (Vercel)",
         "storage": "Supabase"
     }
+from mangum import Mangum
+handler = Mangum(app)
