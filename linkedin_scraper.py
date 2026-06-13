@@ -89,3 +89,18 @@ class LinkedInJobScraper:
                 print(f"Fetching description {i+1}/{len(jobs)}: {job['title']} at {job['company']}")
                 
                 html = self._scrape_url(job["url"])
+                soup = BeautifulSoup(html, "html.parser")
+                description = soup.select_one(
+                    "div.show-more-less-html__markup, "
+                    "div.jobs-description__content, "
+                    "div.description__text"
+                )
+                job["description"] = (
+                    description.get_text(" ", strip=True) if description else ""
+                )
+            except Exception as e:
+                print(f"Failed to fetch job description: {e}")
+
+            enriched.append(job)
+
+        return enriched

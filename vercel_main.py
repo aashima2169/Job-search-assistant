@@ -7,8 +7,6 @@ import logging
 
 from supabase import create_client, Client
 from resume_processor import ResumeExtractor, ResumeParser, ResumeMatcher
-from platform_config_loader import PlatformConfigLoader
-# from platform_handlers import PlatformHandlerFactory
 
 app = FastAPI(title="Push - Resume-Based Job Matching (Vercel)")
 
@@ -31,7 +29,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 resume_extractor = ResumeExtractor()
 resume_parser = ResumeParser()
 resume_matcher = ResumeMatcher()
-loader = PlatformConfigLoader()
 
 
 # ============ SCHEMAS ============
@@ -357,92 +354,10 @@ async def match_jobs_with_resume(request: MatchJobsRequest):
     """
     Match and score jobs against uploaded resume
     """
-    try:
-        # Get resume from database
-        logger.info(f"Fetching resume: {request.resume_id}")
-        response = supabase.table("resumes").select("parsed_data").eq("id", request.resume_id).execute()
-        
-        if not response.data:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Resume '{request.resume_id}' not found"
-            )
-        
-        resume_data = response.data[0]["parsed_data"]
-        
-        logger.info("Starting job matching...")
-        
-        # Get platform handler
-       # platform_handler = PlatformHandlerFactory.get_handler(request.platform, loader)
-        
-        # Build job search URL
-        config = platform_handler.config
-        job_search_url = config.jobs_url_pattern.format(
-            keyword=request.job_search_keyword,
-            location=request.job_search_location
-        )
-        
-        # Extract jobs
-        logger.info("🔍 Scraping job listings...")
-        jobs = platform_handler.extract_jobs(job_search_url)
-        
-        if not jobs:
-            return MatchJobsResponse(
-                platform=request.platform,
-                resume_id=request.resume_id,
-                candidate_name=resume_data.get("name", "Unknown"),
-                candidate_title=resume_data.get("current_title", "Unknown"),
-                total_jobs_found=0,
-                scored_jobs_count=0,
-                jobs=[],
-                summary={}
-            )
-        
-        # Score jobs
-        logger.info(f"🤖 Scoring {len(jobs)} jobs...")
-        scored_jobs = []
-        
-        for job in jobs:
-            try:
-                score = resume_matcher.score_job(resume_data, job)
-                scored_jobs.append(JobScore(**score))
-            except Exception as e:
-                logger.warning(f"Failed to score job: {str(e)}")
-                continue
-        
-        # Sort by score
-        scored_jobs.sort(key=lambda x: x.overall_score, reverse=True)
-        
-        # Calculate summary
-        if scored_jobs:
-            scores = [job.overall_score for job in scored_jobs]
-            summary = {
-                "avg_score": round(sum(scores) / len(scores)),
-                "max_score": max(scores),
-                "min_score": min(scores),
-                "apply_count": len([j for j in scored_jobs if j.recommendation == "APPLY"]),
-                "consider_count": len([j for j in scored_jobs if j.recommendation == "CONSIDER"]),
-                "skip_count": len([j for j in scored_jobs if j.recommendation == "SKIP"])
-            }
-        else:
-            summary = {}
-        
-        logger.info(f"✅ Matched {len(scored_jobs)} jobs")
-        
-        return MatchJobsResponse(
-            platform=request.platform,
-            resume_id=request.resume_id,
-            candidate_name=resume_data.get("name", "Unknown"),
-            candidate_title=resume_data.get("current_title", "Unknown"),
-            total_jobs_found=len(jobs),
-            scored_jobs_count=len(scored_jobs),
-            jobs=scored_jobs,
-            summary=summary
-        )
-    
-    except Exception as e:
-        logger.error(f"Error matching jobs: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(
+        status_code=503,
+        detail="Job search is temporarily disabled while platform handlers are repaired"
+    )
 
 
 # ============ HELPER FUNCTIONS ============
