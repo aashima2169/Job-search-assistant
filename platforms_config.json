@@ -13,7 +13,7 @@
         "headline": "div.text-body-medium",
         "about": "section[id='about'] p",
         "experience": "section[id='experience'] li",
-        "skills": "section[id='skills'] li"
+        "skills": "section[id='skills'] li" ,
         "job_cards": "div.job-search-card",
         "job_title": "h3.base-search-card__title",
         "job_company": "h4.base-search-card__subtitle",
@@ -40,7 +40,7 @@
         "headline": "div.title",
         "about": "div.summaryText",
         "experience": "section.experience li",
-        "skills": "section.skills .tagItem"
+        "skills": "section.skills .tagItem" ,
         "job_cards": "article.jobTuple",
         "job_title": "a.title",
         "job_company": "a.subTitle",
