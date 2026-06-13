@@ -9,7 +9,7 @@ from io import BytesIO
 from supabase import create_client, Client
 from resume_processor import ResumeExtractor, ResumeParser, ResumeMatcher
 from platform_config_loader import PlatformConfigLoader
-from platform_handlers import PlatformHandlerFactory
+# from platform_handlers import PlatformHandlerFactory
 
 app = FastAPI(title="Push - Resume-Based Job Matching (Vercel)")
 
@@ -370,7 +370,7 @@ async def match_jobs_with_resume(request: MatchJobsRequest):
         logger.info("Starting job matching...")
         
         # Get platform handler
-        platform_handler = PlatformHandlerFactory.get_handler(request.platform, loader)
+       # platform_handler = PlatformHandlerFactory.get_handler(request.platform, loader)
         
         # Build job search URL
         config = platform_handler.config
