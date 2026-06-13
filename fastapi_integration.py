@@ -51,6 +51,26 @@ class AddPlatformRequest(BaseModel):
 
 # ============ ENDPOINTS ============
 
+@app.post("/agent/find-and-track-jobs")
+async def find_and_track_jobs(
+    resume_id: str,
+    keyword: str,
+    location: str,
+    min_score: int = 70,
+    excel_path: str = "job_tracker.xlsx"
+):
+    """
+    Full agent loop:
+    1. Fetch resume
+    2. Search jobs on LinkedIn + Naukri  
+    3. Score each against resume
+    4. For jobs above min_score, suggest resume tailoring
+    5. Write all to Excel tracker
+    6. Return summary
+    """
+    # fetch resume, score jobs, tailor, update excel
+    # human sees the Excel — no auto-apply, gate is preserved
+
 @app.get("/health")
 def health_check():
     """Health check endpoint"""
