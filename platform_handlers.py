@@ -46,9 +46,9 @@ class LinkedInHandler(BasePlatformHandler):
         return "linkedin.com/in/" in url.lower()
 
    def extract_jobs(self, keyword: str, location: str, max_jobs: int = 20) -> List[Dict]:
-    from linkedin_scraper import LinkedInJobScraper
-    scraper = LinkedInJobScraper()
-    return scraper.search_jobs(keyword, location, max_jobs)
+       from linkedin_scraper import LinkedInJobScraper
+       scraper = LinkedInJobScraper()
+       return scraper.search_jobs(keyword, location, max_jobs)
     
     def extract_profile_data(self, profile_url: str) -> Dict[str, Any]:
         """
@@ -100,10 +100,10 @@ class NaukriHandler(BasePlatformHandler):
         return "naukri.com" in url.lower() and ("mnjuser" in url.lower() or "profile" in url.lower())
 
    def extract_jobs(self, keyword: str, location: str, max_jobs: int = 20) -> List[Dict]:
-    # Naukri is less aggressive about scraping than LinkedIn
-    # Can use simple requests here without ScrapingBee
-    import requests
-    from bs4 import BeautifulSoup
+       # Naukri is less aggressive about scraping than LinkedIn
+       # Can use simple requests here without ScrapingBee
+       import requests
+       from bs4 import BeautifulSoup
     
     url = f"https://www.naukri.com/{keyword.replace(' ', '-')}-jobs-in-{location.replace(' ', '-')}"
     
