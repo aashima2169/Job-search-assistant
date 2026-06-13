@@ -44,6 +44,7 @@ class PlatformConfigLoader:
                 name=platform_data["name"],
                 base_url=platform_data["base_url"],
                 profile_url_pattern=platform_data["profile_url_pattern"],
+                jobs_url_pattern=platform_data.get("jobs_url_pattern", ""),
                 enabled=platform_data["enabled"],
                 scraper_type=platform_data["scraper_type"],
                 timeout=platform_data["timeout"],
