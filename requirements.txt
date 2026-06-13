@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 supabase
+mangum
 PyPDF2
 google-generativeai
 python-multipart
