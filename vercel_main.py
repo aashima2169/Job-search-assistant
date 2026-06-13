@@ -4,7 +4,6 @@ from typing import Dict, List, Optional
 import os
 import json
 import logging
-from io import BytesIO
 
 from supabase import create_client, Client
 from resume_processor import ResumeExtractor, ResumeParser, ResumeMatcher
@@ -134,7 +133,7 @@ async def upload_resume(file: UploadFile = File(...), user_id: str = "default", 
         logger.info(f"Uploading to Supabase Storage: {storage_path}")
         supabase.storage.from_("resumes").upload(
             path=storage_path,
-            file=BytesIO(file_content),
+            file=file_content,
             file_options={"content-type": "application/pdf"}
         )
         
@@ -176,6 +175,8 @@ async def upload_resume(file: UploadFile = File(...), user_id: str = "default", 
             "message": f"✅ Resume v{version} uploaded. Use resume_id '{db_id}' for job matching"
         }
     
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error uploading resume: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
