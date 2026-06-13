@@ -22,6 +22,11 @@ class BasePlatformHandler(ABC):
     def extract_profile_data(self, profile_url: str) -> Dict[str, Any]:
         """Extract profile data from the platform"""
         pass
+
+    @abstractmethod
+    def extract_jobs(self, keyword: str, location: str, max_jobs: int = 20) -> List[Dict]:
+        """Search and return job listings from this platform"""
+        pass
     
     @abstractmethod
     def validate_url(self, url: str) -> bool:
@@ -39,6 +44,11 @@ class LinkedInHandler(BasePlatformHandler):
     def validate_url(self, url: str) -> bool:
         """Check if URL is a LinkedIn profile"""
         return "linkedin.com/in/" in url.lower()
+
+   def extract_jobs(self, keyword: str, location: str, max_jobs: int = 20) -> List[Dict]:
+    from linkedin_scraper import LinkedInJobScraper
+    scraper = LinkedInJobScraper()
+    return scraper.search_jobs(keyword, location, max_jobs)
     
     def extract_profile_data(self, profile_url: str) -> Dict[str, Any]:
         """
@@ -88,6 +98,43 @@ class NaukriHandler(BasePlatformHandler):
     def validate_url(self, url: str) -> bool:
         """Check if URL is a Naukri profile"""
         return "naukri.com" in url.lower() and ("mnjuser" in url.lower() or "profile" in url.lower())
+
+   def extract_jobs(self, keyword: str, location: str, max_jobs: int = 20) -> List[Dict]:
+    # Naukri is less aggressive about scraping than LinkedIn
+    # Can use simple requests here without ScrapingBee
+    import requests
+    from bs4 import BeautifulSoup
+    
+    url = f"https://www.naukri.com/{keyword.replace(' ', '-')}-jobs-in-{location.replace(' ', '-')}"
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    response = requests.get(url, headers=headers, timeout=self.config.timeout)
+    soup = BeautifulSoup(response.content, 'html.parser')
+    
+    jobs = []
+    cards = soup.select("article.jobTuple")[:max_jobs]
+    
+    for card in cards:
+        title_el = card.select_one("a.title")
+        company_el = card.select_one("a.subTitle")
+        location_el = card.select_one("li.location")
+        
+        if not title_el:
+            continue
+            
+        jobs.append({
+            "title": title_el.get_text(strip=True),
+            "company": company_el.get_text(strip=True) if company_el else "",
+            "location": location_el.get_text(strip=True) if location_el else "",
+            "url": title_el.get("href", ""),
+            "description": "",
+            "posted": "",
+        })
+    
+    return jobs
     
     def extract_profile_data(self, profile_url: str) -> Dict[str, Any]:
         """Extract Naukri profile data"""
