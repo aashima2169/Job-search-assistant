@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+supabase
+PyPDF2
+google-generativeai
+python-multipart
+beautifulsoup4
+requests
+openpyxl
