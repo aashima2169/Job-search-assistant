@@ -43,7 +43,7 @@ class ResumeParser:
             raise ValueError("GEMINI_API_KEY not set")
         
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
     
     def parse_resume(self, resume_text: str) -> Dict:
         """
@@ -187,7 +187,7 @@ class ResumeMatcher:
             raise ValueError("GEMINI_API_KEY not set")
         
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
     
     def score_job(self, resume_data: Dict, job: Dict) -> Dict:
         """
